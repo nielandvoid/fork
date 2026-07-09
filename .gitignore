@@ -1,0 +1,20 @@
+# Environments
+.env
+
+# Database
+*.db
+sessions.db
+test_sessions.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# OS-specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
