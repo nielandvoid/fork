@@ -21,10 +21,15 @@ def init_db():
                 channel_id INTEGER UNIQUE NOT NULL,
                 mentee_id INTEGER NOT NULL,
                 mentor_id INTEGER NOT NULL,
+                mentor_2_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'active'
             )
         """)
+        try:
+            cursor.execute("ALTER TABLE sessions ADD COLUMN mentor_2_id INTEGER")
+        except sqlite3.OperationalError:
+            pass # column already exists
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'")
         if cursor.fetchone():
             cursor.execute("""
@@ -35,14 +40,14 @@ def init_db():
     finally:
         conn.close()
 
-def create_session(channel_id: int, mentee_id: int, mentor_id: int) -> int:
+def create_session(channel_id: int, mentee_id: int, mentor_id: int, mentor_2_id: int = None) -> int:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO sessions (channel_id, mentee_id, mentor_id, status)
-            VALUES (?, ?, ?, 'active')
-        """, (channel_id, mentee_id, mentor_id))
+            INSERT INTO sessions (channel_id, mentee_id, mentor_id, mentor_2_id, status)
+            VALUES (?, ?, ?, ?, 'active')
+        """, (channel_id, mentee_id, mentor_id, mentor_2_id))
         conn.commit()
         return cursor.lastrowid
     finally:
@@ -53,7 +58,7 @@ def get_session_by_id(session_id: int):
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT session_id, channel_id, mentee_id, mentor_id, created_at, status
+            SELECT session_id, channel_id, mentee_id, mentor_id, mentor_2_id, created_at, status
             FROM sessions
             WHERE session_id = ?
         """, (session_id,))
@@ -67,7 +72,7 @@ def get_session_by_channel(channel_id: int):
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT session_id, channel_id, mentee_id, mentor_id, created_at, status
+            SELECT session_id, channel_id, mentee_id, mentor_id, mentor_2_id, created_at, status
             FROM sessions
             WHERE channel_id = ?
         """, (channel_id,))

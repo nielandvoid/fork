@@ -33,6 +33,7 @@ class SessionCog(commands.Cog):
     @app_commands.describe(
         mentee="The mentee for this session",
         mentor="The mentor for this session",
+        mentor_2="The optional second mentor for co-mentoring",
         category="The category to create the session channel in"
     )
     async def initiate(
@@ -40,7 +41,8 @@ class SessionCog(commands.Cog):
         interaction: discord.Interaction,
         mentee: discord.Member,
         mentor: discord.Member,
-        category: discord.CategoryChannel
+        category: discord.CategoryChannel,
+        mentor_2: discord.Member = None
     ):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -59,36 +61,50 @@ class SessionCog(commands.Cog):
             mentor: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True, manage_channels=True)
         }
+        if mentor_2:
+            overwrites[mentor_2] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
         if mod_role:
             overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
 
         try:
+            topic = f"Mentoring session between Mentee {mentee.display_name} and Mentor {mentor.display_name}."
+            if mentor_2:
+                topic = f"Mentoring session between Mentee {mentee.display_name} and Co-Mentors {mentor.display_name} & {mentor_2.display_name}."
+
             channel = await guild.create_text_channel(
                 name="session-temp",
                 category=category,
                 overwrites=overwrites,
-                topic=f"Mentoring session between Mentee {mentee.display_name} and Mentor {mentor.display_name}."
+                topic=topic
             )
             session_id = database.create_session(
                 channel_id=channel.id,
                 mentee_id=mentee.id,
-                mentor_id=mentor.id
+                mentor_id=mentor.id,
+                mentor_2_id=mentor_2.id if mentor_2 else None
             )
             await channel.edit(name=f"session-{session_id}")
 
             embed = discord.Embed(
-                title="new mentoring session initiated",
-                description="welcome to your private mentoring channel! this channel is only visible to the mentee, mentor, and moderators.",
+                title="Mentoring Session Initiated!",
+                description="Welcome to your private mentoring session! This channel is only visible to the mentee, mentor(s), and TPP admins.",
                 color=discord.Color.from_rgb(255, 255, 255),
                 timestamp=datetime.datetime.now(datetime.timezone.utc)
             )
-            embed.add_field(name="session id", value=f"`{session_id}`", inline=True)
-            embed.add_field(name="channel", value=channel.mention, inline=True)
-            embed.add_field(name="mentee", value=mentee.mention, inline=True)
-            embed.add_field(name="mentor", value=mentor.mention, inline=True)
-            embed.set_footer(text="peer project • peerproject.in")
+            embed.add_field(name="Session-ID", value=f"`{session_id}`", inline=True)
+            embed.add_field(name="Channel", value=channel.mention, inline=True)
+            embed.add_field(name="Mentee", value=mentee.mention, inline=True)
+            if mentor_2:
+                embed.add_field(name="Mentor", value=mentor.mention, inline=True)
+                embed.add_field(name="Co-Mentor", value=mentor_2.mention, inline=True)
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+            else:
+                embed.add_field(name="Mentor", value=mentor.mention, inline=True)
+            embed.set_footer(text="Fork @ The Peer Project")
 
             ping_mentions = f"{mentee.mention} {mentor.mention}"
+            if mentor_2:
+                ping_mentions += f" {mentor_2.mention}"
             if mod_role:
                 ping_mentions += f" {mod_role.mention}"
 
@@ -131,19 +147,26 @@ class SessionCog(commands.Cog):
         else:
             session_data = database.get_session_by_channel(interaction.channel_id)
             if not session_data:
-                await interaction.followup.send("this channel is not an active mentoring session. please specify a session id or channel.")
+                await interaction.followup.send("This channel is not an active mentoring session. Please specify a session ID or channel.")
                 return
 
         mentee_id = session_data["mentee_id"]
         mentor_id = session_data["mentor_id"]
+        mentor_2_id = session_data.get("mentor_2_id")
         chan_id = session_data["channel_id"]
 
         mentee = guild.get_member(mentee_id)
         mentor = guild.get_member(mentor_id)
+        mentor_2 = guild.get_member(mentor_2_id) if mentor_2_id else None
         session_chan = guild.get_channel(chan_id)
 
         mentee_str = mentee.mention if mentee else f"left server (id: {mentee_id})"
         mentor_str = mentor.mention if mentor else f"left server (id: {mentor_id})"
+        
+        mentor_2_str = None
+        if mentor_2_id:
+            mentor_2_str = mentor_2.mention if mentor_2 else f"left server (id: {mentor_2_id})"
+
         chan_str = session_chan.mention if session_chan else f"#deleted-channel (id: {chan_id})"
 
         status_text = "active" if session_data["status"] == "active" else "nuked"
@@ -153,13 +176,15 @@ class SessionCog(commands.Cog):
             color=discord.Color.from_rgb(255, 255, 255),
             timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
-        embed.add_field(name="session id", value=f"`{session_data['session_id']}`", inline=True)
+        embed.add_field(name="session-ID", value=f"`{session_data['session_id']}`", inline=True)
         embed.add_field(name="status", value=status_text, inline=True)
         embed.add_field(name="channel", value=chan_str, inline=False)
         embed.add_field(name="mentee", value=mentee_str, inline=True)
         embed.add_field(name="mentor", value=mentor_str, inline=True)
+        if mentor_2_str:
+            embed.add_field(name="co-mentor", value=mentor_2_str, inline=True)
         embed.add_field(name="created at", value=str(session_data["created_at"]).lower(), inline=False)
-        embed.set_footer(text="peer project • peerproject.in")
+        embed.set_footer(text="Fork @ The Peer Project")
 
         await interaction.followup.send(embed=embed)
 
@@ -182,7 +207,7 @@ class SessionCog(commands.Cog):
 
         mod_role = self._resolve_moderator_role(guild)
         if not self._is_moderator(interaction.user, mod_role):
-            await interaction.followup.send("you do not have permission to nuke sessions. only moderators can do this.", ephemeral=True)
+            await interaction.followup.send("You do not have permission to nuke sessions. Only TPP admins can do this.", ephemeral=True)
             return
 
         session_data = None
@@ -199,7 +224,7 @@ class SessionCog(commands.Cog):
         else:
             session_data = database.get_session_by_channel(interaction.channel_id)
             if not session_data:
-                await interaction.followup.send("this channel is not an active mentoring session. please specify a session id or channel.", ephemeral=True)
+                await interaction.followup.send("This channel is not an active mentoring session. Please specify a session ID or channel.", ephemeral=True)
                 return
 
         database.nuke_session(session_data["session_id"])
@@ -208,11 +233,11 @@ class SessionCog(commands.Cog):
         if target_channel:
             try:
                 if target_channel.id == interaction.channel_id:
-                    await interaction.followup.send("nuking this channel now...", ephemeral=True)
+                    await interaction.followup.send("nuking `{session_data['session_id']}` (channel: {target_channel.name})", ephemeral=True)
                     await target_channel.delete(reason=f"Session {session_data['session_id']} nuked by {interaction.user}")
                 else:
                     await target_channel.delete(reason=f"Session {session_data['session_id']} nuked by {interaction.user}")
-                    await interaction.followup.send(f"session `{session_data['session_id']}` (channel: {target_channel.name}) has been nuked.", ephemeral=True)
+                    await interaction.followup.send(f"session `{session_data['session_id']}` (channel: `#{target_channel.name}`) has been nuked.", ephemeral=True)
             except Exception as e:
                 await interaction.followup.send(f"marked as nuked in DB, but failed to delete channel: {str(e)}", ephemeral=True)
         else:
