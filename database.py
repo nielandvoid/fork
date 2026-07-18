@@ -94,3 +94,17 @@ def nuke_session(session_id: int) -> bool:
         return cursor.rowcount > 0
     finally:
         conn.close()
+
+def archive_session(session_id: int) -> bool:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE sessions
+            SET status = 'archived'
+            WHERE session_id = ?
+        """, (session_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()

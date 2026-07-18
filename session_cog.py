@@ -243,5 +243,86 @@ class SessionCog(commands.Cog):
         else:
             await interaction.followup.send(f"session `{session_data['session_id']}` marked as nuked in DB (channel was already deleted).", ephemeral=True)
 
+    @session_group.command(name="archive", description="archives the session by making it read-only and optionally moving it to a category")
+    @app_commands.describe(
+        session_id="Optional: Search by Session ID to archive",
+        channel="Optional: Search by channel to archive",
+        category="Optional: Category to move the archived channel to"
+    )
+    async def archive(
+        self,
+        interaction: discord.Interaction,
+        session_id: int = None,
+        channel: discord.TextChannel = None,
+        category: discord.CategoryChannel = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("this command can only be used within a server.", ephemeral=True)
+            return
+
+        mod_role = self._resolve_moderator_role(guild)
+        if not self._is_moderator(interaction.user, mod_role):
+            await interaction.followup.send("You do not have permission to archive sessions. Only TPP admins can do this.", ephemeral=True)
+            return
+
+        session_data = None
+        if session_id is not None:
+            session_data = database.get_session_by_id(session_id)
+            if not session_data:
+                await interaction.followup.send(f"no session found with ID `{session_id}`.", ephemeral=True)
+                return
+        elif channel is not None:
+            session_data = database.get_session_by_channel(channel.id)
+            if not session_data:
+                await interaction.followup.send(f"no session found associated with channel {channel.mention}.", ephemeral=True)
+                return
+        else:
+            session_data = database.get_session_by_channel(interaction.channel_id)
+            if not session_data:
+                await interaction.followup.send("This channel is not an active mentoring session. Please specify a session ID or channel.", ephemeral=True)
+                return
+
+        database.archive_session(session_data["session_id"])
+        target_channel = guild.get_channel(session_data["channel_id"])
+
+        if target_channel:
+            try:
+                mentee = guild.get_member(session_data["mentee_id"])
+                mentor = guild.get_member(session_data["mentor_id"])
+                mentor_2 = guild.get_member(session_data["mentor_2_id"]) if session_data.get("mentor_2_id") else None
+
+                if mentee:
+                    await target_channel.set_permissions(mentee, read_messages=True, send_messages=False, read_message_history=True)
+                if mentor:
+                    await target_channel.set_permissions(mentor, read_messages=True, send_messages=False, read_message_history=True)
+                if mentor_2:
+                    await target_channel.set_permissions(mentor_2, read_messages=True, send_messages=False, read_message_history=True)
+
+                old_name = target_channel.name
+                new_name = f"archived-{session_data['session_id']}"
+                
+                edit_kwargs = {"name": new_name}
+                if category:
+                    edit_kwargs["category"] = category
+
+                await target_channel.edit(**edit_kwargs)
+
+                embed = discord.Embed(
+                    title="Session Archived",
+                    description="This mentoring session has been archived and is now read-only.",
+                    color=discord.Color.from_rgb(180, 180, 180),
+                    timestamp=datetime.datetime.now(datetime.timezone.utc)
+                )
+                embed.set_footer(text="Fork @ The Peer Project")
+                await target_channel.send(embed=embed)
+
+                await interaction.followup.send(f"session `{session_data['session_id']}` (channel: `#{old_name}`) has been archived as `#{new_name}`.", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"marked as archived in DB, but failed to update channel: {str(e)}", ephemeral=True)
+        else:
+            await interaction.followup.send(f"session `{session_data['session_id']}` marked as archived in DB (channel was already deleted).", ephemeral=True)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(SessionCog(bot))
