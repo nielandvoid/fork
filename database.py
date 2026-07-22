@@ -108,3 +108,19 @@ def archive_session(session_id: int) -> bool:
         return cursor.rowcount > 0
     finally:
         conn.close()
+
+def reconstruct_session(session_id: int, channel_id: int, mentee_id: int, mentor_id: int, mentor_2_id: int = None) -> bool:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM sessions WHERE channel_id = ? AND session_id != ?", (channel_id, session_id))
+        cursor.execute("""
+            INSERT OR REPLACE INTO sessions (session_id, channel_id, mentee_id, mentor_id, mentor_2_id, status)
+            VALUES (?, ?, ?, ?, ?, 'active')
+        """, (session_id, channel_id, mentee_id, mentor_id, mentor_2_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+

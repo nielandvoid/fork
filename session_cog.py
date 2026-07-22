@@ -324,5 +324,89 @@ class SessionCog(commands.Cog):
         else:
             await interaction.followup.send(f"session `{session_data['session_id']}` marked as archived in DB (channel was already deleted).", ephemeral=True)
 
+    @session_group.command(name="reconstruct", description="reconstructs an archived / existing session in the current channel")
+    @app_commands.describe(
+        session_id="The ID of the session to reconstruct",
+        mentee="The mentee for this session",
+        mentor="The primary mentor for this session",
+        mentor_2="Optional: The secondary mentor for this session"
+    )
+    async def reconstruct(
+        self,
+        interaction: discord.Interaction,
+        session_id: int,
+        mentee: discord.Member,
+        mentor: discord.Member,
+        mentor_2: discord.Member = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("this command can only be used within a server.", ephemeral=True)
+            return
+
+        mod_role = self._resolve_moderator_role(guild)
+        if not self._is_moderator(interaction.user, mod_role):
+            await interaction.followup.send("You do not have permission to reconstruct sessions. Only TPP admins can do this.", ephemeral=True)
+            return
+
+        try:
+            database.reconstruct_session(
+                session_id=session_id,
+                channel_id=interaction.channel_id,
+                mentee_id=mentee.id,
+                mentor_id=mentor.id,
+                mentor_2_id=mentor_2.id if mentor_2 else None
+            )
+
+          
+            channel = interaction.channel
+            topic = f"Mentoring session between Mentee {mentee.display_name} and Mentor {mentor.display_name}."
+            if mentor_2:
+                topic = f"Mentoring session between Mentee {mentee.display_name} and Co-Mentors {mentor.display_name} & {mentor_2.display_name}."
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                mentee: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True),
+                mentor: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True, manage_channels=True)
+            }
+            if mentor_2:
+                overwrites[mentor_2] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
+            if mod_role:
+                overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
+
+            await channel.edit(name=f"session-{session_id}", topic=topic, overwrites=overwrites)
+
+            embed = discord.Embed(
+                title="Session Reconstructed!",
+                description="This mentoring session has been successfully reconstructed in this channel. Welcome back!",
+                color=discord.Color.from_rgb(255, 255, 255),
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.add_field(name="Session-ID", value=f"`{session_id}`", inline=True)
+            embed.add_field(name="Channel", value=channel.mention, inline=True)
+            embed.add_field(name="Mentee", value=mentee.mention, inline=True)
+            if mentor_2:
+                embed.add_field(name="Mentor", value=mentor.mention, inline=True)
+                embed.add_field(name="Co-Mentor", value=mentor_2.mention, inline=True)
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+            else:
+                embed.add_field(name="Mentor", value=mentor.mention, inline=True)
+            embed.set_footer(text="Fork @ The Peer Project")
+
+            ping_mentions = f"{mentee.mention} {mentor.mention}"
+            if mentor_2:
+                ping_mentions += f" {mentor_2.mention}"
+            if mod_role:
+                ping_mentions += f" {mod_role.mention}"
+
+            await channel.send(content=ping_mentions, embed=embed)
+            await interaction.followup.send(f"session `{session_id}` has been successfully reconstructed.", ephemeral=True)
+
+        except Exception as e:
+            await interaction.followup.send(f"failed to reconstruct session: {str(e)}", ephemeral=True)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(SessionCog(bot))
+
