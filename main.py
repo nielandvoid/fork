@@ -20,6 +20,7 @@ import database
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+
         self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"OK")
@@ -38,6 +39,7 @@ class ForkBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
+        intents.message_content = True
         super().__init__(command_prefix="fork!", intents=intents)
 
     async def setup_hook(self):

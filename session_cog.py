@@ -87,7 +87,7 @@ class SessionCog(commands.Cog):
 
             embed = discord.Embed(
                 title="Mentoring Session Initiated!",
-                description="Welcome to your private mentoring session! This channel is only visible to the mentee, mentor(s), and TPP admins.",
+                description="Welcome to your mentoring session! This channel is only visible to the mentee, mentor(s), and TPP admins.",
                 color=discord.Color.from_rgb(255, 255, 255),
                 timestamp=datetime.datetime.now(datetime.timezone.utc)
             )
@@ -406,6 +406,173 @@ class SessionCog(commands.Cog):
 
         except Exception as e:
             await interaction.followup.send(f"failed to reconstruct session: {str(e)}", ephemeral=True)
+
+    @session_group.command(name="recreate", description="recreates an archived / existing session with a brand new channel")
+    @app_commands.describe(
+        session_id="The ID of the session to recreate",
+        category="The category to create the new channel in",
+        mentee="Optional: Change the mentee for this session",
+        mentor="Optional: Change the primary mentor for this session",
+        mentor_2="Optional: Change the secondary mentor for this session",
+        clear_co_mentor="Optional: Set True to remove the co-mentor completely"
+    )
+    async def recreate(
+        self,
+        interaction: discord.Interaction,
+        session_id: int,
+        category: discord.CategoryChannel,
+        mentee: discord.Member = None,
+        mentor: discord.Member = None,
+        mentor_2: discord.Member = None,
+        clear_co_mentor: bool = False
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("this command can only be used within a server.", ephemeral=True)
+            return
+
+        mod_role = self._resolve_moderator_role(guild)
+        if not self._is_moderator(interaction.user, mod_role):
+            await interaction.followup.send("you do not have permission to recreate sessions.", ephemeral=True)
+            return
+
+        session_data = database.get_session_by_id(session_id)
+        if not session_data:
+            await interaction.followup.send(f"no session found with ID `{session_id}`.", ephemeral=True)
+            return
+
+        final_mentee = mentee or guild.get_member(session_data["mentee_id"])
+        final_mentor = mentor or guild.get_member(session_data["mentor_id"])
+        
+        final_mentor_2 = None
+        if not clear_co_mentor:
+            final_mentor_2 = mentor_2 or (guild.get_member(session_data["mentor_2_id"]) if session_data.get("mentor_2_id") else None)
+
+        if not final_mentee or not final_mentor:
+            await interaction.followup.send("could not find the mentee or mentor in the server.", ephemeral=True)
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            final_mentee: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True),
+            final_mentor: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True, manage_channels=True)
+        }
+        if final_mentor_2:
+            overwrites[final_mentor_2] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
+        if mod_role:
+            overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
+
+        try:
+            topic = f"Mentoring session between Mentee {final_mentee.display_name} and Mentor {final_mentor.display_name}."
+            if final_mentor_2:
+                topic = f"Mentoring session between Mentee {final_mentee.display_name} and Co-Mentors {final_mentor.display_name} & {final_mentor_2.display_name}."
+
+            channel = await guild.create_text_channel(
+                name=f"session-{session_id}",
+                category=category,
+                overwrites=overwrites,
+                topic=topic
+            )
+
+            database.reconstruct_session(
+                session_id=session_id,
+                channel_id=channel.id,
+                mentee_id=final_mentee.id,
+                mentor_id=final_mentor.id,
+                mentor_2_id=final_mentor_2.id if final_mentor_2 else None
+            )
+
+            embed = discord.Embed(
+                title="Session Recreated!",
+                description="This mentoring session has been successfully recreated. Welcome back!",
+                color=discord.Color.from_rgb(255, 255, 255),
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.add_field(name="Session-ID", value=f"`{session_id}`", inline=True)
+            embed.add_field(name="Channel", value=channel.mention, inline=True)
+            embed.add_field(name="Mentee", value=final_mentee.mention, inline=True)
+            if final_mentor_2:
+                embed.add_field(name="Mentor", value=final_mentor.mention, inline=True)
+                embed.add_field(name="Co-Mentor", value=final_mentor_2.mention, inline=True)
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+            else:
+                embed.add_field(name="Mentor", value=final_mentor.mention, inline=True)
+            embed.set_footer(text="Fork @ The Peer Project")
+
+            ping_mentions = f"{final_mentee.mention} {final_mentor.mention}"
+            if final_mentor_2:
+                ping_mentions += f" {final_mentor_2.mention}"
+            if mod_role:
+                ping_mentions += f" {mod_role.mention}"
+
+            await channel.send(content=ping_mentions, embed=embed)
+            await interaction.followup.send(f"session `{session_id}` successfully recreated in {channel.mention}.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"failed to recreate session: {str(e)}", ephemeral=True)
+
+    @session_group.command(name="transcribe", description="generates a beautiful HTML transcript of a session")
+    @app_commands.describe(
+        session_id="optional: search by session-ID to transcribe",
+        channel="optional: search by channel to transcribe"
+    )
+    async def transcribe(
+        self,
+        interaction: discord.Interaction,
+        session_id: int = None,
+        channel: discord.TextChannel = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("this command can only be used within a server.", ephemeral=True)
+            return
+
+        mod_role = self._resolve_moderator_role(guild)
+        if not self._is_moderator(interaction.user, mod_role):
+            await interaction.followup.send("you do not have permission to transcribe sessions.", ephemeral=True)
+            return
+
+        session_data = None
+        if session_id is not None:
+            session_data = database.get_session_by_id(session_id)
+            if not session_data:
+                await interaction.followup.send(f"no session found with ID `{session_id}`.", ephemeral=True)
+                return
+        elif channel is not None:
+            session_data = database.get_session_by_channel(channel.id)
+            if not session_data:
+                await interaction.followup.send(f"no session found associated with channel {channel.mention}.", ephemeral=True)
+                return
+        else:
+            session_data = database.get_session_by_channel(interaction.channel_id)
+            if not session_data:
+                await interaction.followup.send("this channel is not an active mentoring session. please specify a session ID or channel.", ephemeral=True)
+                return
+
+        target_channel = guild.get_channel(session_data["channel_id"])
+        if not target_channel:
+            await interaction.followup.send("could not find the channel for this session.", ephemeral=True)
+            return
+
+        import chat_exporter
+        import io
+
+        transcript = await chat_exporter.export(target_channel, bot=self.bot)
+        if transcript is None:
+            await interaction.followup.send("failed to generate transcript.", ephemeral=True)
+            return
+
+        file = discord.File(
+            io.BytesIO(transcript.encode("utf-8")),
+            filename=f"transcript-{session_data['session_id']}.html"
+        )
+        await interaction.followup.send(
+            content=f"transcript generated for session `{session_data['session_id']}`.",
+            file=file,
+            ephemeral=True
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SessionCog(bot))
