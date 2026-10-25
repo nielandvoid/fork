@@ -169,7 +169,7 @@ class SessionCog(commands.Cog):
 
         chan_str = session_chan.mention if session_chan else f"#deleted-channel (id: {chan_id})"
 
-        status_text = "active" if session_data["status"] == "active" else "nuked"
+        status_text = session_data["status"]
         
         embed = discord.Embed(
             title=f"session info: {session_data['session_id']}",
@@ -323,6 +323,199 @@ class SessionCog(commands.Cog):
                 await interaction.followup.send(f"marked as archived in DB, but failed to update channel: {str(e)}", ephemeral=True)
         else:
             await interaction.followup.send(f"session `{session_data['session_id']}` marked as archived in DB (channel was already deleted).", ephemeral=True)
+
+    @session_group.command(name="conclude", description="ends a session: removes mentor access, mentee keeps the channel")
+    @app_commands.describe(
+        session_id="Optional: Search by Session ID to conclude",
+        channel="Optional: Search by channel to conclude",
+        category="Optional: Category to move the concluded channel to",
+        mentee_read_only="Optional: also stop the mentee from sending messages (default: mentee keeps full access)"
+    )
+    async def conclude(
+        self,
+        interaction: discord.Interaction,
+        session_id: int = None,
+        channel: discord.TextChannel = None,
+        category: discord.CategoryChannel = None,
+        mentee_read_only: bool = False
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("this command can only be used within a server.", ephemeral=True)
+            return
+
+        mod_role = self._resolve_moderator_role(guild)
+        if not self._is_moderator(interaction.user, mod_role):
+            await interaction.followup.send("You do not have permission to conclude sessions. Only TPP admins can do this.", ephemeral=True)
+            return
+
+        session_data = None
+        if session_id is not None:
+            session_data = database.get_session_by_id(session_id)
+            if not session_data:
+                await interaction.followup.send(f"no session found with ID `{session_id}`.", ephemeral=True)
+                return
+        elif channel is not None:
+            session_data = database.get_session_by_channel(channel.id)
+            if not session_data:
+                await interaction.followup.send(f"no session found associated with channel {channel.mention}.", ephemeral=True)
+                return
+        else:
+            session_data = database.get_session_by_channel(interaction.channel_id)
+            if not session_data:
+                await interaction.followup.send("This channel is not an active mentoring session. Please specify a session ID or channel.", ephemeral=True)
+                return
+
+        if session_data["status"] == "nuked":
+            await interaction.followup.send(f"session `{session_data['session_id']}` was nuked, so there is nothing to conclude.", ephemeral=True)
+            return
+        if session_data["status"] == "concluded":
+            await interaction.followup.send(f"session `{session_data['session_id']}` is already concluded.", ephemeral=True)
+            return
+
+        database.conclude_session(session_data["session_id"])
+        target_channel = guild.get_channel(session_data["channel_id"])
+
+        if not target_channel:
+            await interaction.followup.send(f"session `{session_data['session_id']}` marked as concluded in DB (channel was already deleted).", ephemeral=True)
+            return
+
+        try:
+            mentor_ids = {session_data["mentor_id"]}
+            if session_data.get("mentor_2_id"):
+                mentor_ids.add(session_data["mentor_2_id"])
+
+            overwrites = {
+                target: overwrite
+                for target, overwrite in target_channel.overwrites.items()
+                if getattr(target, "id", None) not in mentor_ids
+            }
+
+            mentee = guild.get_member(session_data["mentee_id"])
+            if mentee:
+                overwrites[mentee] = discord.PermissionOverwrite(
+                    read_messages=True,
+                    send_messages=False if mentee_read_only else True,
+                    read_message_history=True
+                )
+
+            edit_kwargs = {"overwrites": overwrites}
+            if category:
+                edit_kwargs["category"] = category
+            await target_channel.edit(**edit_kwargs)
+
+            embed = discord.Embed(
+                title="Session Concluded",
+                description="This mentoring session has ended. Mentors no longer have access to this channel.",
+                color=discord.Color.from_rgb(180, 180, 180),
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.set_footer(text="Fork @ The Peer Project")
+            await target_channel.send(embed=embed)
+
+            await interaction.followup.send(
+                f"session `{session_data['session_id']}` (channel: {target_channel.mention}) has been concluded. mentor access removed; the mentee keeps access.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"marked as concluded in DB, but failed to update channel: {str(e)}", ephemeral=True)
+
+    @session_group.command(name="reopen", description="reverts a conclusion: gives the mentors their access back and marks the session active")
+    @app_commands.describe(
+        session_id="Optional: Search by Session ID to reopen",
+        channel="Optional: Search by channel to reopen",
+        category="Optional: Category to move the reopened channel to"
+    )
+    async def reopen(
+        self,
+        interaction: discord.Interaction,
+        session_id: int = None,
+        channel: discord.TextChannel = None,
+        category: discord.CategoryChannel = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("this command can only be used within a server.", ephemeral=True)
+            return
+
+        mod_role = self._resolve_moderator_role(guild)
+        if not self._is_moderator(interaction.user, mod_role):
+            await interaction.followup.send("You do not have permission to reopen sessions. Only TPP admins can do this.", ephemeral=True)
+            return
+
+        session_data = None
+        if session_id is not None:
+            session_data = database.get_session_by_id(session_id)
+            if not session_data:
+                await interaction.followup.send(f"no session found with ID `{session_id}`.", ephemeral=True)
+                return
+        elif channel is not None:
+            session_data = database.get_session_by_channel(channel.id)
+            if not session_data:
+                await interaction.followup.send(f"no session found associated with channel {channel.mention}.", ephemeral=True)
+                return
+        else:
+            session_data = database.get_session_by_channel(interaction.channel_id)
+            if not session_data:
+                await interaction.followup.send("This channel is not a mentoring session. Please specify a session ID or channel.", ephemeral=True)
+                return
+
+        if session_data["status"] != "concluded":
+            await interaction.followup.send(
+                f"session `{session_data['session_id']}` is `{session_data['status']}`, not concluded, so there is nothing to reopen.",
+                ephemeral=True
+            )
+            return
+
+        target_channel = guild.get_channel(session_data["channel_id"])
+        if not target_channel:
+            await interaction.followup.send(f"session `{session_data['session_id']}` is concluded, but its channel no longer exists. use `/session recreate` instead.", ephemeral=True)
+            return
+
+        try:
+            mentee = guild.get_member(session_data["mentee_id"])
+            mentor = guild.get_member(session_data["mentor_id"])
+            mentor_2 = guild.get_member(session_data["mentor_2_id"]) if session_data.get("mentor_2_id") else None
+
+            full_access = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
+            overwrites = dict(target_channel.overwrites)
+            restored = []
+            for member in (mentee, mentor, mentor_2):
+                if member:
+                    overwrites[member] = full_access
+            for member in (mentor, mentor_2):
+                if member:
+                    restored.append(member)
+
+            edit_kwargs = {"overwrites": overwrites}
+            if category:
+                edit_kwargs["category"] = category
+            await target_channel.edit(**edit_kwargs)
+
+            database.reopen_session(session_data["session_id"])
+
+            embed = discord.Embed(
+                title="Session Reopened",
+                description="This mentoring session has been reopened. Mentors have access to this channel again.",
+                color=discord.Color.from_rgb(255, 255, 255),
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.set_footer(text="Fork @ The Peer Project")
+            await target_channel.send(content=" ".join(m.mention for m in restored) or None, embed=embed)
+
+            missing = []
+            if not mentor:
+                missing.append(f"mentor (id: {session_data['mentor_id']})")
+            if session_data.get("mentor_2_id") and not mentor_2:
+                missing.append(f"co-mentor (id: {session_data['mentor_2_id']})")
+            msg = f"session `{session_data['session_id']}` (channel: {target_channel.mention}) has been reopened."
+            if missing:
+                msg += f" could not restore access for {', '.join(missing)}: no longer in the server."
+            await interaction.followup.send(msg, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"failed to reopen session: {str(e)}", ephemeral=True)
 
     @session_group.command(name="reconstruct", description="reconstructs an archived / existing session in the current channel")
     @app_commands.describe(
@@ -534,26 +727,30 @@ class SessionCog(commands.Cog):
             await interaction.followup.send("you do not have permission to transcribe sessions.", ephemeral=True)
             return
 
-        session_data = None
-        if session_id is not None:
+        target_channel = None
+        label = "channel"
+
+        if channel is not None:
+            target_channel = channel
+            session_data = database.get_session_by_channel(channel.id)
+            label = f"session `{session_data['session_id']}`" if session_data else f"`#{channel.name}`"
+            filename_part = f"session-{session_data['session_id']}" if session_data else channel.name
+        elif session_id is not None:
             session_data = database.get_session_by_id(session_id)
             if not session_data:
                 await interaction.followup.send(f"no session found with ID `{session_id}`.", ephemeral=True)
                 return
-        elif channel is not None:
-            session_data = database.get_session_by_channel(channel.id)
-            if not session_data:
-                await interaction.followup.send(f"no session found associated with channel {channel.mention}.", ephemeral=True)
-                return
+            target_channel = guild.get_channel(session_data["channel_id"])
+            label = f"session `{session_data['session_id']}`"
+            filename_part = f"session-{session_data['session_id']}"
         else:
+            target_channel = interaction.channel
             session_data = database.get_session_by_channel(interaction.channel_id)
-            if not session_data:
-                await interaction.followup.send("this channel is not an active mentoring session. please specify a session ID or channel.", ephemeral=True)
-                return
+            label = f"session `{session_data['session_id']}`" if session_data else f"`#{interaction.channel.name}`"
+            filename_part = f"session-{session_data['session_id']}" if session_data else interaction.channel.name
 
-        target_channel = guild.get_channel(session_data["channel_id"])
         if not target_channel:
-            await interaction.followup.send("could not find the channel for this session.", ephemeral=True)
+            await interaction.followup.send("could not find the channel to transcribe.", ephemeral=True)
             return
 
         import chat_exporter
@@ -566,11 +763,102 @@ class SessionCog(commands.Cog):
 
         file = discord.File(
             io.BytesIO(transcript.encode("utf-8")),
-            filename=f"transcript-{session_data['session_id']}.html"
+            filename=f"transcript-{filename_part}.html"
         )
         await interaction.followup.send(
-            content=f"transcript generated for session `{session_data['session_id']}`.",
+            content=f"transcript generated for {label}.",
             file=file,
+            ephemeral=True
+        )
+
+    @session_group.command(name="transcribe_all", description="generates HTML transcripts of all sessions and exports them in a zip file")
+    @app_commands.describe(
+        status="optional: filter by session status (e.g. active, archived, concluded, or all)"
+    )
+    async def transcribe_all(
+        self,
+        interaction: discord.Interaction,
+        status: str = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("this command can only be used within a server.", ephemeral=True)
+            return
+
+        mod_role = self._resolve_moderator_role(guild)
+        if not self._is_moderator(interaction.user, mod_role):
+            await interaction.followup.send("you do not have permission to transcribe sessions.", ephemeral=True)
+            return
+
+        filter_status = None
+        if status and status.lower() in ["active", "archived", "concluded", "nuked"]:
+            filter_status = status.lower()
+
+        sessions = database.get_all_sessions(status=filter_status)
+        if not sessions:
+            await interaction.followup.send("no sessions found to transcribe.", ephemeral=True)
+            return
+
+        import chat_exporter
+        import io
+        import zipfile
+
+        zip_buffer = io.BytesIO()
+        exported_count = 0
+        failed_count = 0
+        processed_channel_ids = set()
+
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for s in sessions:
+                sid = s["session_id"]
+                cid = s["channel_id"]
+                processed_channel_ids.add(cid)
+                target_channel = guild.get_channel(cid)
+                if not target_channel:
+                    failed_count += 1
+                    continue
+
+                try:
+                    transcript = await chat_exporter.export(target_channel, bot=self.bot)
+                    if transcript:
+                        zip_file.writestr(f"session-{sid}.html", transcript)
+                        exported_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    failed_count += 1
+
+            for chan in guild.text_channels:
+                if chan.id not in processed_channel_ids:
+                    chan_name = chan.name.lower()
+                    if chan_name.startswith("archived-") or chan_name.startswith("archive-") or ("session" in chan_name):
+                        try:
+                            transcript = await chat_exporter.export(chan, bot=self.bot)
+                            if transcript:
+                                zip_file.writestr(f"{chan.name}.html", transcript)
+                                exported_count += 1
+                                processed_channel_ids.add(chan.id)
+                        except Exception:
+                            pass
+
+        if exported_count == 0:
+            await interaction.followup.send(f"failed to export any transcripts ({failed_count} channels failed/missing).", ephemeral=True)
+            return
+
+        zip_buffer.seek(0)
+        zip_discord_file = discord.File(
+            zip_buffer,
+            filename=f"tpp-transcripts-{datetime.date.today().isoformat()}.zip"
+        )
+
+        msg = f"successfully generated transcripts for **{exported_count}** sessions (including archived channels)."
+        if failed_count > 0:
+            msg += f" ({failed_count} channels were deleted or inaccessible)"
+
+        await interaction.followup.send(
+            content=msg,
+            file=zip_discord_file,
             ephemeral=True
         )
 

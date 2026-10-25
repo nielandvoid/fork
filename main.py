@@ -13,7 +13,6 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
 from config import Config
 import database
 

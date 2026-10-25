@@ -109,6 +109,34 @@ def archive_session(session_id: int) -> bool:
     finally:
         conn.close()
 
+def conclude_session(session_id: int) -> bool:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE sessions
+            SET status = 'concluded'
+            WHERE session_id = ?
+        """, (session_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+def reopen_session(session_id: int) -> bool:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE sessions
+            SET status = 'active'
+            WHERE session_id = ? AND status = 'concluded'
+        """, (session_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
 def reconstruct_session(session_id: int, channel_id: int, mentee_id: int, mentor_id: int, mentor_2_id: int = None) -> bool:
     conn = get_db_connection()
     try:
@@ -121,6 +149,28 @@ def reconstruct_session(session_id: int, channel_id: int, mentee_id: int, mentor
         """, (session_id, channel_id, mentee_id, mentor_id, mentor_2_id))
         conn.commit()
         return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+def get_all_sessions(status: str = None):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        if status:
+            cursor.execute("""
+                SELECT session_id, channel_id, mentee_id, mentor_id, mentor_2_id, created_at, status
+                FROM sessions
+                WHERE status = ?
+                ORDER BY session_id ASC
+            """, (status,))
+        else:
+            cursor.execute("""
+                SELECT session_id, channel_id, mentee_id, mentor_id, mentor_2_id, created_at, status
+                FROM sessions
+                ORDER BY session_id ASC
+            """)
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
